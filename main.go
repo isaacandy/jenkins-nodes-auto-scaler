@@ -136,14 +136,22 @@ func calculateNumberOfBoxesToStart(queueSize int) int {
 
 func stopBuildBoxes(httpClient *http.Client, service *compute.Service) {
 	log.Println("Checking if any box is enabled and idle")
+	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
-		if isNodeEnabledAndIdle(buildBox) {
-			log.Printf("%s is enabled and idle, trying to toggle it offline\n", buildBox)
-			toggleNodeStatus(httpClient, buildBox, "offline")
-			stopBuildBox(service, buildBox)
-		} else if isNodeIdle(buildBox) {
-			ensureBuildBoxIsNotRunning(service, buildBox)
-		}
+		wg.Add(1)
+		go stopBuildBoxAsync(httpClient, service, buildBox, &wg)
+	}
+	wg.Wait()
+}
+
+func stopBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	if isNodeEnabledAndIdle(buildBox) {
+		log.Printf("%s is enabled and idle, trying to toggle it offline\n", buildBox)
+		toggleNodeStatus(httpClient, buildBox, "offline")
+		stopBuildBox(service, buildBox)
+	} else if isNodeIdle(buildBox) {
+		ensureBuildBoxIsNotRunning(service, buildBox)
 	}
 }
 
@@ -213,7 +221,7 @@ func fetchNodeInfo(buildBox string) JenkinsBuildBoxInfo {
 	var data JenkinsBuildBoxInfo
 	err = decoder.Decode(&data)
 	if err != nil {
-		log.Printf("Error deserialising Jenkins build box info API call: %s\n", err.Error())
+		log.Printf("Error deserialising Jenkins build box %s info API call: %s\n", buildBox, err.Error())
 		return JenkinsBuildBoxInfo{}
 	}
 
