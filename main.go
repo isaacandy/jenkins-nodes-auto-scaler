@@ -47,7 +47,9 @@ func main() {
 	workersPerBuildBox = flag.Int("workersPerBuildBox", defaultWorkersPerBuildBox, "number of workers per build box")
 	localCreds := flag.Bool("useLocalCreds", false, "uses the local creds.json as credentials for Google Cloud APIs")
 	flag.Parse()
-	buildBoxesPool = flag.Args()
+	if len(flag.Args()) > 0 {
+		buildBoxesPool = flag.Args()
+	}
 
 	httpClient := &http.Client{}
 	var service *compute.Service
