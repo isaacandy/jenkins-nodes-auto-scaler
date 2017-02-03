@@ -1,0 +1,14 @@
+{
+	"name": "{{name}}",
+	"address": {
+		"street": "{{address.street}}",
+		"number": {{address.number}},
+		"fullAddress": "{{fullAddress address}}"
+	},
+	"phones": [
+		{{#each phones}}
+			"{{this}}"{{#unless @last}},{{/unless}}
+		{{/each}}
+	]
+	"extra-hardcoded-config": "mega cool setting"
+}

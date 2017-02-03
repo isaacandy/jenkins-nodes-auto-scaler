@@ -1,0 +1,6 @@
+package: gitlab.uk.shazamteam.net/luca.naldini/some-test
+
+import:
+
+- package: golang.org/x/oauth2/google
+- package: google.golang.org/api/compute/v1
