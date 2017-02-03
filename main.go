@@ -15,6 +15,7 @@ import (
 	"google.golang.org/api/transport"
 	"net/http"
 	"os"
+	"sync"
 )
 
 type JenkinsQueue struct {
@@ -31,20 +32,18 @@ type JenkinsBuildBoxInfo struct {
 	Offline            bool `json:"offline"`
 }
 
-const defaultWorkersPerBuildBox = 2
-
-var workersPerBuildBox = defaultWorkersPerBuildBox
-var buildBoxesPool = []string{"build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api"}
+var workersPerBuildBox = 2
+var buildBoxesPool = []string{"build1-api", "build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api"}
 
 func main() {
 	defer func() {
 		if e := recover(); e != nil {
-			fmt.Printf("\n\033[31;1m%s\x1b[0m\n", e)
+			log.Printf("\n\033[31;1m%s\x1b[0m\n", e)
 			os.Exit(1)
 		}
 	}()
 
-	workersPerBuildBox = flag.Int("workersPerBuildBox", defaultWorkersPerBuildBox, "number of workers per build box")
+	workersPerBuildBox = *flag.Int("workersPerBuildBox", workersPerBuildBox, "number of workers per build box")
 	localCreds := flag.Bool("useLocalCreds", false, "uses the local creds.json as credentials for Google Cloud APIs")
 	flag.Parse()
 	if len(flag.Args()) > 0 {
@@ -60,13 +59,13 @@ func main() {
 		service, err = getServiceWithDefaultCreds()
 	}
 	if err != nil {
-		fmt.Printf("Error getting creds: %s\n", err.Error())
+		log.Printf("Error getting creds: %s\n", err.Error())
 		return
 	}
 
 	for {
 		queueSize := fetchQueueSize()
-		fmt.Printf("Queue size: %d\n", queueSize)
+		log.Printf("Queue size: %d\n", queueSize)
 
 		if queueSize > 0 {
 			startBuildBoxes(httpClient, service, queueSize)
@@ -74,7 +73,7 @@ func main() {
 			stopBuildBoxes(httpClient, service)
 		}
 
-		fmt.Println("Iteration finished")
+		log.Println("Iteration finished")
 		fmt.Println("")
 		time.Sleep(time.Second * 8)
 	}
@@ -89,29 +88,38 @@ func main() {
 
 func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSize int) {
 	boxesNeeded := calculateNumberOfBoxesToStart(queueSize)
-	fmt.Println("Checking if any box is offline")
+	log.Println("Checking if any box is offline")
+	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
 		if isNodeTemporaryOffline(buildBox) || isNodeOffline(buildBox) {
-			fmt.Printf("%s is offline, trying to toggle it online\n", buildBox)
-			startBuildBox(service, buildBox)
-			toggleNodeStatus(httpClient, buildBox, "online")
-			if isNodeOffline(buildBox) {
-				launchNodeAgent(httpClient, buildBox)
-			}
+			wg.Add(1)
+			go startBuildBoxAsync(httpClient, service, buildBox, &wg)
 			boxesNeeded = boxesNeeded - 1
-			fmt.Printf("%d more boxes needed\n", boxesNeeded)
+			log.Printf("%d more boxes needed\n", boxesNeeded)
 		}
 		if boxesNeeded <= 0 {
+			wg.Wait()
 			return
 		}
 	}
-	fmt.Println("No more build boxes available to start")
+	wg.Wait()
+	log.Println("No more build boxes available to start")
+}
+
+func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
+	startBuildBox(service, buildBox)
+	toggleNodeStatus(httpClient, buildBox, "online")
+	if isNodeOffline(buildBox) {
+		launchNodeAgent(httpClient, buildBox)
+	}
 }
 
 func startBuildBox(service *compute.Service, buildBox string) {
 	_, err := service.Instances.Start("service-engineering", "europe-west1-b", buildBox).Do()
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
 	waitForStatus(service, buildBox, "RUNNING")
@@ -127,10 +135,10 @@ func calculateNumberOfBoxesToStart(queueSize int) int {
 }
 
 func stopBuildBoxes(httpClient *http.Client, service *compute.Service) {
-	fmt.Println("Checking if any box is enabled and idle")
+	log.Println("Checking if any box is enabled and idle")
 	for _, buildBox := range buildBoxesPool {
 		if isNodeEnabledAndIdle(buildBox) {
-			fmt.Printf("%s is enabled and idle, trying to toggle it offline\n", buildBox)
+			log.Printf("%s is enabled and idle, trying to toggle it offline\n", buildBox)
 			toggleNodeStatus(httpClient, buildBox, "offline")
 			stopBuildBox(service, buildBox)
 		} else if isNodeIdle(buildBox) {
@@ -145,7 +153,7 @@ func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) 
 	_, err = httpClient.Do(req)
 
 	if err == nil {
-		fmt.Printf("%s was toggled %s\n", buildBox, message)
+		log.Printf("%s was toggled %s\n", buildBox, message)
 	}
 	return err
 }
@@ -156,7 +164,8 @@ func launchNodeAgent(httpClient *http.Client, buildBox string) error {
 	_, err = httpClient.Do(req)
 
 	if err == nil {
-		fmt.Printf("Agent was relaunched for %s\n", buildBox)
+		log.Printf("Agent was relaunched for %s\n", buildBox)
+		time.Sleep(time.Second * 15)
 	}
 	return err
 }
@@ -164,7 +173,7 @@ func launchNodeAgent(httpClient *http.Client, buildBox string) error {
 func stopBuildBox(service *compute.Service, buildBox string) error {
 	_, err := service.Instances.Stop("service-engineering", "europe-west1-b", buildBox).Do()
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return err
 	}
 	waitForStatus(service, buildBox, "TERMINATED")
@@ -204,7 +213,7 @@ func fetchNodeInfo(buildBox string) JenkinsBuildBoxInfo {
 	var data JenkinsBuildBoxInfo
 	err = decoder.Decode(&data)
 	if err != nil {
-		fmt.Printf("Error deserialising Jenkins build box info API call: %s\n", err.Error())
+		log.Printf("Error deserialising Jenkins build box info API call: %s\n", err.Error())
 		return JenkinsBuildBoxInfo{}
 	}
 
@@ -219,7 +228,7 @@ func fetchQueueSize() int {
 	var data JenkinsQueue
 	err = decoder.Decode(&data)
 	if err != nil {
-		fmt.Printf("Error deserialising Jenkins queue API call: %s\n", err.Error())
+		log.Printf("Error deserialising Jenkins queue API call: %s\n", err.Error())
 		return 0
 	}
 
@@ -244,12 +253,12 @@ func waitForStatus(svc *compute.Service, buildBox string, status string) error {
 	for {
 		i, err := svc.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
 		if nil != err {
-			log.Printf("Failed to get instance data: %v\n", err)
+			log.Printf("Failed to get instance data for %s: %v\n", buildBox, err)
 			continue
 		}
 
 		if previousStatus != i.Status {
-			log.Printf("  -> %s\n", i.Status)
+			log.Printf("  %s -> %s\n", buildBox, i.Status)
 			previousStatus = i.Status
 		}
 
@@ -266,7 +275,7 @@ func waitForStatus(svc *compute.Service, buildBox string, status string) error {
 func getServiceWithCredsFile() (*compute.Service, error) {
 	optionAPIKey := option.WithServiceAccountFile("creds.json")
 	if optionAPIKey == nil {
-		fmt.Println("Error creating option.WithAPIKey")
+		log.Println("Error creating option.WithAPIKey")
 		return nil, errors.New("Error creating option.WithAPIKey")
 	}
 	optScope := []option.ClientOption{
@@ -277,13 +286,13 @@ func getServiceWithCredsFile() (*compute.Service, error) {
 
 	httpClient, _, err := transport.NewHTTPClient(ctx, optionSlice...)
 	if err != nil {
-		fmt.Printf("Error NewHTTPClient: %s\n", err.Error())
+		log.Printf("Error NewHTTPClient: %s\n", err.Error())
 		return nil, err
 	}
 
 	service, err := compute.New(httpClient)
 	if err != nil {
-		fmt.Printf("Error compute.New(): %s\n", err.Error())
+		log.Printf("Error compute.New(): %s\n", err.Error())
 		return nil, err
 	}
 	return service, nil
