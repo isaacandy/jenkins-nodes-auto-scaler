@@ -7,6 +7,7 @@ import (
 
 	"encoding/json"
 	"errors"
+	"flag"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
@@ -30,8 +31,9 @@ type JenkinsBuildBoxInfo struct {
 	Offline            bool `json:"offline"`
 }
 
-const workersPerBuildBox = 2
+const defaultWorkersPerBuildBox = 2
 
+var workersPerBuildBox = defaultWorkersPerBuildBox
 var buildBoxesPool = []string{"build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api"}
 
 func main() {
@@ -42,8 +44,19 @@ func main() {
 		}
 	}()
 
+	workersPerBuildBox = flag.Int("workersPerBuildBox", defaultWorkersPerBuildBox, "number of workers per build box")
+	localCreds := flag.Bool("useLocalCreds", false, "uses the local creds.json as credentials for Google Cloud APIs")
+	flag.Parse()
+	buildBoxesPool = flag.Args()
+
 	httpClient := &http.Client{}
-	service, err := getServiceWithCredsFile()
+	var service *compute.Service
+	var err error
+	if *localCreds {
+		service, err = getServiceWithCredsFile()
+	} else {
+		service, err = getServiceWithDefaultCreds()
+	}
 	if err != nil {
 		fmt.Printf("Error getting creds: %s\n", err.Error())
 		return
