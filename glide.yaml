@@ -1,4 +1,4 @@
-package: gitlab.uk.shazamteam.net/luca.naldini/some-test
+package: gitlab.uk.shazamteam.net/luca.naldini/jenkins-node-auto-scaler
 
 import:
 
