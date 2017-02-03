@@ -1,0 +1,9 @@
+*.lock
+/.settings
+.project
+.classpath
+*.swp
+*.iml
+vendor/*
+.idea/
+build/
