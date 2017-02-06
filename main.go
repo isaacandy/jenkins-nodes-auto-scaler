@@ -91,7 +91,7 @@ func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSiz
 	log.Println("Checking if any box is offline")
 	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
-		if isNodeTemporaryOffline(buildBox) || isNodeOffline(buildBox) {
+		if isNodeOffline(buildBox) {
 			wg.Add(1)
 			go startBuildBoxAsync(httpClient, service, buildBox, &wg)
 			boxesNeeded = boxesNeeded - 1
@@ -109,12 +109,15 @@ func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSiz
 func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
-	startBuildBox(service, buildBox)
-	if isNodeTemporaryOffline(buildBox) {
-		toggleNodeStatus(httpClient, buildBox, "online")
+	if !isNodeTemporaryOffline(buildBox) {
+		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
+	startBuildBox(service, buildBox)
 	if isNodeOffline(buildBox) {
 		launchNodeAgent(httpClient, buildBox)
+	}
+	if isNodeTemporaryOffline(buildBox) {
+		toggleNodeStatus(httpClient, buildBox, "online")
 	}
 }
 
