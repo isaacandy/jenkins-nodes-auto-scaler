@@ -13,6 +13,7 @@ import (
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/option"
 	"google.golang.org/api/transport"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
@@ -31,6 +32,9 @@ type JenkinsBuildBoxInfo struct {
 	Idle               bool `json:"idle"`
 	TemporarilyOffline bool `json:"temporarilyOffline"`
 	Offline            bool `json:"offline"`
+	MonitorData        struct {
+		HudsonNodeMonitorsArchitectureMonitor *string `json:"hudson.node_monitors.ArchitectureMonitor"`
+	} `json:"monitorData"`
 }
 
 var workersPerBuildBox = 2
@@ -65,7 +69,7 @@ func main() {
 	}
 
 	for {
-		queueSize := fetchQueueSize()
+		queueSize := fetchQueueSize(httpClient)
 		log.Printf("Queue size: %d\n", queueSize)
 
 		if queueSize > 0 {
@@ -91,8 +95,9 @@ func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSiz
 	boxesNeeded := calculateNumberOfBoxesToStart(queueSize)
 	log.Println("Checking if any box is offline")
 	var wg sync.WaitGroup
+	buildBoxesPool = shuffle(buildBoxesPool)
 	for _, buildBox := range buildBoxesPool {
-		if isNodeOffline(buildBox) {
+		if isNodeOffline(httpClient, buildBox) {
 			wg.Add(1)
 			go startBuildBoxAsync(httpClient, service, buildBox, &wg)
 			boxesNeeded = boxesNeeded - 1
@@ -107,17 +112,25 @@ func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSiz
 	log.Println("No more build boxes available to start")
 }
 
+func shuffle(slice []string) []string {
+	for i := range slice {
+		j := rand.Intn(i + 1)
+		slice[i], slice[j] = slice[j], slice[i]
+	}
+	return slice
+}
+
 func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
-	if !isNodeTemporarilyOffline(buildBox) {
+	if !isNodeTemporarilyOffline(httpClient, buildBox) {
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
 	startBuildBox(service, buildBox)
-	if isNodeOffline(buildBox) {
+	if !isAgentConnected(httpClient, buildBox) {
 		launchNodeAgent(httpClient, buildBox)
 	}
-	if isNodeTemporarilyOffline(buildBox) {
+	if isNodeTemporarilyOffline(httpClient, buildBox) {
 		toggleNodeStatus(httpClient, buildBox, "online")
 	}
 }
@@ -133,6 +146,7 @@ func startBuildBox(service *compute.Service, buildBox string) {
 		return
 	}
 	waitForStatus(service, buildBox, "RUNNING")
+	time.Sleep(time.Second * 20)
 }
 
 func calculateNumberOfBoxesToStart(queueSize int) int {
@@ -156,11 +170,11 @@ func stopBuildBoxes(httpClient *http.Client, service *compute.Service) {
 
 func stopBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
 	defer wg.Done()
-	if !isNodeIdle(buildBox) {
+	if !isNodeIdle(httpClient, buildBox) {
 		return
 	}
 
-	if !isNodeTemporarilyOffline(buildBox) {
+	if !isNodeTemporarilyOffline(httpClient, buildBox) {
 		log.Printf("%s is not offline, trying to toggle it offline\n", buildBox)
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
@@ -179,40 +193,36 @@ func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) 
 	return err
 }
 
-func launchNodeAgent(httpClient *http.Client, buildBox string) error {
-	req, err := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/launchSlaveAgent", nil)
-	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
-	_, err = httpClient.Do(req)
+func launchNodeAgent(httpClient *http.Client, buildBox string) {
+	log.Printf("Agent was relaunched for %s, waiting for it to come online\n", buildBox)
 
-	if err == nil {
-		log.Printf("Agent was relaunched for %s, waiting for it to come online\n", buildBox)
-
-		quit := make(chan bool)
-		onlineChannel := make(chan bool, 1)
-		go func() {
-			for {
-				select {
-				case <-quit:
+	quit := make(chan bool)
+	onlineChannel := make(chan bool, 1)
+	go func() {
+		for {
+			select {
+			case <-quit:
+				return
+			default:
+				if isAgentConnected(httpClient, buildBox) {
+					onlineChannel <- true
 					return
-				default:
-					if !isNodeOffline(buildBox) {
-						onlineChannel <- true
-						return
-					}
-					time.Sleep(time.Second * 5)
+				} else {
+					req, _ := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/launchSlaveAgent", nil)
+					req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
+					httpClient.Do(req)
 				}
+				time.Sleep(time.Second * 10)
 			}
-		}()
-
-		select {
-		case <-onlineChannel:
-		case <-time.After(time.Second * 60):
-			log.Printf("%s did not come online after launching the agent", buildBox)
-
 		}
+	}()
+
+	select {
+	case <-onlineChannel:
+	case <-time.After(time.Second * 120):
+		log.Printf("%s did not come online after launching the agent", buildBox)
 		quit <- true
 	}
-	return err
 }
 
 func stopBuildBox(service *compute.Service, buildBox string) error {
@@ -226,26 +236,34 @@ func stopBuildBox(service *compute.Service, buildBox string) error {
 	return nil
 }
 
-func isNodeOffline(buildBox string) bool {
-	data := fetchNodeInfo(buildBox)
+func isAgentConnected(httpClient *http.Client, buildBox string) bool {
+	data := fetchNodeInfo(httpClient, buildBox)
+
+	return data.MonitorData.HudsonNodeMonitorsArchitectureMonitor != nil
+}
+
+func isNodeOffline(httpClient *http.Client, buildBox string) bool {
+	data := fetchNodeInfo(httpClient, buildBox)
 
 	return data.Offline
 }
 
-func isNodeTemporarilyOffline(buildBox string) bool {
-	data := fetchNodeInfo(buildBox)
+func isNodeTemporarilyOffline(httpClient *http.Client, buildBox string) bool {
+	data := fetchNodeInfo(httpClient, buildBox)
 
 	return data.TemporarilyOffline
 }
 
-func isNodeIdle(buildBox string) bool {
-	data := fetchNodeInfo(buildBox)
+func isNodeIdle(httpClient *http.Client, buildBox string) bool {
+	data := fetchNodeInfo(httpClient, buildBox)
 
 	return data.Idle
 }
 
-func fetchNodeInfo(buildBox string) JenkinsBuildBoxInfo {
-	resp, err := http.Get("http://api-jenkins.shzcld.com/computer/" + buildBox + ".c.service-engineering.internal/api/json")
+func fetchNodeInfo(httpClient *http.Client, buildBox string) JenkinsBuildBoxInfo {
+	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/api/json", nil)
+	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
+	resp, err := httpClient.Do(req)
 	defer resp.Body.Close()
 
 	decoder := json.NewDecoder(resp.Body)
@@ -259,8 +277,10 @@ func fetchNodeInfo(buildBox string) JenkinsBuildBoxInfo {
 	return data
 }
 
-func fetchQueueSize() int {
-	resp, err := http.Get("http://api-jenkins.shzcld.com/queue/api/json")
+func fetchQueueSize(httpClient *http.Client) int {
+	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/queue/api/json", nil)
+	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
+	resp, err := httpClient.Do(req)
 	defer resp.Body.Close()
 
 	decoder := json.NewDecoder(resp.Body)
@@ -282,7 +302,7 @@ func fetchQueueSize() int {
 
 func ensureBuildBoxIsNotRunning(svc *compute.Service, buildBox string) {
 	if isBuildBoxRunning(svc, buildBox) {
-		log.Printf("%s was still running, even though node in Jenkins is offline... Stopping\n", buildBox)
+		log.Printf("%s is running... Stopping\n", buildBox)
 		stopBuildBox(svc, buildBox)
 	}
 }
