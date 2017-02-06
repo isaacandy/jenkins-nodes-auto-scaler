@@ -185,8 +185,32 @@ func launchNodeAgent(httpClient *http.Client, buildBox string) error {
 	_, err = httpClient.Do(req)
 
 	if err == nil {
-		log.Printf("Agent was relaunched for %s\n", buildBox)
-		time.Sleep(time.Second * 20)
+		log.Printf("Agent was relaunched for %s, waiting for it to come online\n", buildBox)
+
+		quit := make(chan bool)
+		onlineChannel := make(chan bool, 1)
+		go func() {
+			for {
+				select {
+				case <-quit:
+					return
+				default:
+					if !isNodeOffline(buildBox) {
+						onlineChannel <- true
+						return
+					}
+					time.Sleep(time.Second * 5)
+				}
+			}
+		}()
+
+		select {
+		case <-onlineChannel:
+		case <-time.After(time.Second * 60):
+			log.Printf("%s did not come online after launching the agent", buildBox)
+
+		}
+		quit <- true
 	}
 	return err
 }
