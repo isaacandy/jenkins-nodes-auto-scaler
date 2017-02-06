@@ -20,7 +20,8 @@ import (
 
 type JenkinsQueue struct {
 	Items []struct {
-		Task struct {
+		Buildable bool `json:"buildable"`
+		Task      struct {
 			Name string `json:"name"`
 		} `json:"task"`
 	} `json:"items"`
@@ -245,8 +246,14 @@ func fetchQueueSize() int {
 		log.Printf("Error deserialising Jenkins queue API call: %s\n", err.Error())
 		return 0
 	}
+	counter := 0
+	for _, i := range data.Items {
+		if i.Buildable {
+			counter = counter + 1
+		}
+	}
 
-	return len(data.Items)
+	return counter
 }
 
 func ensureBuildBoxIsNotRunning(svc *compute.Service, buildBox string) {
