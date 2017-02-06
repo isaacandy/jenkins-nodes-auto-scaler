@@ -110,14 +110,14 @@ func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSiz
 func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
-	if !isNodeTemporaryOffline(buildBox) {
+	if !isNodeTemporarilyOffline(buildBox) {
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
 	startBuildBox(service, buildBox)
 	if isNodeOffline(buildBox) {
 		launchNodeAgent(httpClient, buildBox)
 	}
-	if isNodeTemporaryOffline(buildBox) {
+	if isNodeTemporarilyOffline(buildBox) {
 		toggleNodeStatus(httpClient, buildBox, "online")
 	}
 }
@@ -160,7 +160,7 @@ func stopBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildB
 		return
 	}
 
-	if !isNodeTemporaryOffline(buildBox) {
+	if !isNodeTemporarilyOffline(buildBox) {
 		log.Printf("%s is not offline, trying to toggle it offline\n", buildBox)
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
@@ -174,7 +174,7 @@ func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) 
 	_, err = httpClient.Do(req)
 
 	if err == nil {
-		log.Printf("%s was toggled %s\n", buildBox, message)
+		log.Printf("%s was toggled temporarily %s\n", buildBox, message)
 	}
 	return err
 }
@@ -208,7 +208,7 @@ func isNodeOffline(buildBox string) bool {
 	return data.Offline
 }
 
-func isNodeTemporaryOffline(buildBox string) bool {
+func isNodeTemporarilyOffline(buildBox string) bool {
 	data := fetchNodeInfo(buildBox)
 
 	return data.TemporarilyOffline
