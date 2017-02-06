@@ -257,7 +257,7 @@ func isBuildBoxRunning(svc *compute.Service, buildBox string) bool {
 	i, err := svc.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
 	if nil != err {
 		log.Printf("Failed to get instance data: %v\n", err)
-		return
+		return false
 	}
 
 	return i.Status == "RUNNING"
