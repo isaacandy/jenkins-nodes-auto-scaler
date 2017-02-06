@@ -110,13 +110,19 @@ func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, build
 	defer wg.Done()
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
 	startBuildBox(service, buildBox)
-	toggleNodeStatus(httpClient, buildBox, "online")
+	if isNodeTemporaryOffline(buildBox) {
+		toggleNodeStatus(httpClient, buildBox, "online")
+	}
 	if isNodeOffline(buildBox) {
 		launchNodeAgent(httpClient, buildBox)
 	}
 }
 
 func startBuildBox(service *compute.Service, buildBox string) {
+	if isBuildBoxRunning(service, buildBox) {
+		return
+	}
+
 	_, err := service.Instances.Start("service-engineering", "europe-west1-b", buildBox).Do()
 	if err != nil {
 		log.Println(err)
@@ -146,13 +152,16 @@ func stopBuildBoxes(httpClient *http.Client, service *compute.Service) {
 
 func stopBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
 	defer wg.Done()
-	if isNodeEnabledAndIdle(buildBox) {
-		log.Printf("%s is enabled and idle, trying to toggle it offline\n", buildBox)
-		toggleNodeStatus(httpClient, buildBox, "offline")
-		stopBuildBox(service, buildBox)
-	} else if isNodeIdle(buildBox) {
-		ensureBuildBoxIsNotRunning(service, buildBox)
+	if !isNodeIdle(buildBox) {
+		return
 	}
+
+	if !isNodeTemporaryOffline(buildBox) {
+		log.Printf("%s is not offline, trying to toggle it offline\n", buildBox)
+		toggleNodeStatus(httpClient, buildBox, "offline")
+	}
+
+	ensureBuildBoxIsNotRunning(service, buildBox)
 }
 
 func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) error {
@@ -173,7 +182,7 @@ func launchNodeAgent(httpClient *http.Client, buildBox string) error {
 
 	if err == nil {
 		log.Printf("Agent was relaunched for %s\n", buildBox)
-		time.Sleep(time.Second * 15)
+		time.Sleep(time.Second * 20)
 	}
 	return err
 }
@@ -199,12 +208,6 @@ func isNodeTemporaryOffline(buildBox string) bool {
 	data := fetchNodeInfo(buildBox)
 
 	return data.TemporarilyOffline
-}
-
-func isNodeEnabledAndIdle(buildBox string) bool {
-	data := fetchNodeInfo(buildBox)
-
-	return data.Idle && !data.TemporarilyOffline && !data.Offline
 }
 
 func isNodeIdle(buildBox string) bool {
@@ -244,16 +247,20 @@ func fetchQueueSize() int {
 }
 
 func ensureBuildBoxIsNotRunning(svc *compute.Service, buildBox string) {
+	if isBuildBoxRunning(svc, buildBox) {
+		log.Printf("%s was still running, even though node in Jenkins is offline... Stopping\n", buildBox)
+		stopBuildBox(svc, buildBox)
+	}
+}
+
+func isBuildBoxRunning(svc *compute.Service, buildBox string) bool {
 	i, err := svc.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
 	if nil != err {
 		log.Printf("Failed to get instance data: %v\n", err)
 		return
 	}
 
-	if i.Status == "RUNNING" {
-		log.Printf("%s was still running, even though node in Jenkins is offline... Stopping\n", buildBox)
-		stopBuildBox(svc, buildBox)
-	}
+	return i.Status == "RUNNING"
 }
 
 func waitForStatus(svc *compute.Service, buildBox string, status string) error {
