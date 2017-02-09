@@ -13,9 +13,11 @@ import (
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/option"
 	"google.golang.org/api/transport"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -129,10 +131,11 @@ func enableNode(httpClient *http.Client, service *compute.Service, buildBox stri
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
 	startCloudBox(service, buildBox)
+	var agentLaunched bool
 	if !isAgentConnected(httpClient, buildBox) {
-		launchNodeAgent(httpClient, buildBox)
+		agentLaunched = launchNodeAgent(httpClient, buildBox)
 	}
-	if isNodeTemporarilyOffline(httpClient, buildBox) {
+	if agentLaunched && isNodeTemporarilyOffline(httpClient, buildBox) {
 		toggleNodeStatus(httpClient, buildBox, "online")
 	}
 }
@@ -226,7 +229,7 @@ func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) 
 	return err
 }
 
-func launchNodeAgent(httpClient *http.Client, buildBox string) {
+func launchNodeAgent(httpClient *http.Client, buildBox string) bool {
 	log.Printf("Agent was relaunched for %s, waiting for it to come online\n", buildBox)
 
 	quit := make(chan bool)
@@ -250,12 +253,16 @@ func launchNodeAgent(httpClient *http.Client, buildBox string) {
 		}
 	}()
 
+	agentLaunched := true
 	select {
 	case <-onlineChannel:
 	case <-time.After(time.Second * 120):
 		log.Printf("%s did not come online after launching the agent", buildBox)
 		quit <- true
+		agentLaunched = false
 	}
+
+	return agentLaunched
 }
 
 func stopBuildBox(service *compute.Service, buildBox string) error {
@@ -270,9 +277,23 @@ func stopBuildBox(service *compute.Service, buildBox string) error {
 }
 
 func isAgentConnected(httpClient *http.Client, buildBox string) bool {
-	data := fetchNodeInfo(httpClient, buildBox)
+	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/logText/progressiveHtml", nil)
+	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
+	resp, err := httpClient.Do(req)
 
-	return data.MonitorData.HudsonNodeMonitorsArchitectureMonitor != nil
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	content, _ := ioutil.ReadAll(resp.Body)
+
+	s := string(content)
+	if len(s) > 37 && strings.Contains(string(s[len(s)-37:]), "successfully connected and online") {
+		return true
+	}
+
+	return false
 }
 
 func isNodeOffline(httpClient *http.Client, buildBox string) bool {
