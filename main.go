@@ -53,6 +53,7 @@ type systemTest struct {
 var workersPerBuildBox = 2
 var buildBoxesPool = []string{"build1-api", "build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api", "build8-api", "build9-api", "build10-api"}
 var systemTestRunning = systemTest{}
+var httpClient = &http.Client{}
 
 func main() {
 	defer func() {
@@ -69,7 +70,6 @@ func main() {
 		buildBoxesPool = flag.Args()
 	}
 
-	httpClient := &http.Client{}
 	var service *compute.Service
 	var err error
 	if *localCreds {
@@ -83,15 +83,15 @@ func main() {
 	}
 
 	for {
-		queueSize := fetchQueueSize(httpClient)
+		queueSize := fetchQueueSize()
 
-		queueSize = adjustQueueSizeDependingWhetherSystemTestIsRunning(httpClient, queueSize)
+		queueSize = adjustQueueSizeDependingWhetherSystemTestIsRunning(queueSize)
 		log.Printf("Queue size: %d\n", queueSize)
 
 		if queueSize > 0 {
-			enableMoreNodes(httpClient, service, queueSize)
+			enableMoreNodes(service, queueSize)
 		} else {
-			disableUnnecessaryBuildBoxes(httpClient, service)
+			disableUnnecessaryBuildBoxes(service)
 		}
 
 		log.Println("Iteration finished")
@@ -107,17 +107,17 @@ func main() {
 	//fmt.Println(res)
 }
 
-func enableMoreNodes(httpClient *http.Client, service *compute.Service, queueSize int) {
+func enableMoreNodes(service *compute.Service, queueSize int) {
 	boxesNeeded := calculateNumberOfNodesToEnable(queueSize)
 	log.Println("Checking if any box is offline")
 	var wg sync.WaitGroup
 	buildBoxesPool = shuffle(buildBoxesPool)
 	for _, buildBox := range buildBoxesPool {
-		if isNodeOffline(httpClient, buildBox) {
+		if isNodeOffline(buildBox) {
 			wg.Add(1)
 			go func(b string) {
 				defer wg.Done()
-				enableNode(httpClient, service, b)
+				enableNode(service, b)
 			}(buildBox)
 			boxesNeeded = boxesNeeded - 1
 			log.Printf("%d more boxes needed\n", boxesNeeded)
@@ -139,18 +139,18 @@ func shuffle(slice []string) []string {
 	return slice
 }
 
-func enableNode(httpClient *http.Client, service *compute.Service, buildBox string) {
+func enableNode(service *compute.Service, buildBox string) {
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
-	if !isNodeTemporarilyOffline(httpClient, buildBox) {
-		toggleNodeStatus(httpClient, buildBox, "offline")
+	if !isNodeTemporarilyOffline(buildBox) {
+		toggleNodeStatus(buildBox, "offline")
 	}
 	startCloudBox(service, buildBox)
 	var agentLaunched bool
-	if !isAgentConnected(httpClient, buildBox) {
-		agentLaunched = launchNodeAgent(httpClient, buildBox)
+	if !isAgentConnected(buildBox) {
+		agentLaunched = launchNodeAgent(buildBox)
 	}
-	if agentLaunched && isNodeTemporarilyOffline(httpClient, buildBox) {
-		toggleNodeStatus(httpClient, buildBox, "online")
+	if agentLaunched && isNodeTemporarilyOffline(buildBox) {
+		toggleNodeStatus(buildBox, "online")
 	}
 }
 
@@ -177,11 +177,11 @@ func calculateNumberOfNodesToEnable(queueSize int) int {
 	return (queueSize / workersPerBuildBox) + mod
 }
 
-func disableUnnecessaryBuildBoxes(httpClient *http.Client, service *compute.Service) {
+func disableUnnecessaryBuildBoxes(service *compute.Service) {
 	online := make(chan string, len(buildBoxesPool))
 	for _, buildBox := range buildBoxesPool {
 		go func(b string, channel chan<- string) {
-			if isCloudBoxRunning(service, b) && !isNodeOffline(httpClient, b) && !isNodeTemporarilyOffline(httpClient, b) {
+			if isCloudBoxRunning(service, b) && !isNodeOffline(b) && !isNodeTemporarilyOffline(b) {
 				channel <- b
 				return
 			}
@@ -202,7 +202,7 @@ func disableUnnecessaryBuildBoxes(httpClient *http.Client, service *compute.Serv
 	if buildBoxToKeepOnline == "" {
 		buildBoxToKeepOnline = shuffle(buildBoxesPool)[0]
 		log.Printf("Will start %s and keep online", buildBoxToKeepOnline)
-		enableNode(httpClient, service, buildBoxToKeepOnline)
+		enableNode(service, buildBoxToKeepOnline)
 	}
 
 	log.Println("Checking if any other box is enabled and idle")
@@ -212,27 +212,27 @@ func disableUnnecessaryBuildBoxes(httpClient *http.Client, service *compute.Serv
 			wg.Add(1)
 			go func(b string) {
 				defer wg.Done()
-				disableNode(httpClient, service, b)
+				disableNode(service, b)
 			}(buildBox)
 		}
 	}
 	wg.Wait()
 }
 
-func disableNode(httpClient *http.Client, service *compute.Service, buildBox string) {
-	if !isNodeIdle(httpClient, buildBox) {
+func disableNode(service *compute.Service, buildBox string) {
+	if !isNodeIdle(buildBox) {
 		return
 	}
 
-	if !isNodeTemporarilyOffline(httpClient, buildBox) {
+	if !isNodeTemporarilyOffline(buildBox) {
 		log.Printf("%s is not offline, trying to toggle it offline\n", buildBox)
-		toggleNodeStatus(httpClient, buildBox, "offline")
+		toggleNodeStatus(buildBox, "offline")
 	}
 
 	ensureCloudBoxIsNotRunning(service, buildBox)
 }
 
-func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) error {
+func toggleNodeStatus(buildBox string, message string) error {
 	req, err := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/toggleOffline", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	_, err = httpClient.Do(req)
@@ -243,7 +243,7 @@ func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) 
 	return err
 }
 
-func launchNodeAgent(httpClient *http.Client, buildBox string) bool {
+func launchNodeAgent(buildBox string) bool {
 	log.Printf("Agent was relaunched for %s, waiting for it to come online\n", buildBox)
 
 	quit := make(chan bool)
@@ -254,7 +254,7 @@ func launchNodeAgent(httpClient *http.Client, buildBox string) bool {
 			case <-quit:
 				return
 			default:
-				if isAgentConnected(httpClient, buildBox) {
+				if isAgentConnected(buildBox) {
 					onlineChannel <- true
 					return
 				} else {
@@ -290,7 +290,7 @@ func stopBuildBox(service *compute.Service, buildBox string) error {
 	return nil
 }
 
-func isAgentConnected(httpClient *http.Client, buildBox string) bool {
+func isAgentConnected(buildBox string) bool {
 	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/logText/progressiveHtml", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
@@ -310,25 +310,25 @@ func isAgentConnected(httpClient *http.Client, buildBox string) bool {
 	return false
 }
 
-func isNodeOffline(httpClient *http.Client, buildBox string) bool {
-	data := fetchNodeInfo(httpClient, buildBox)
+func isNodeOffline(buildBox string) bool {
+	data := fetchNodeInfo(buildBox)
 
 	return data.Offline
 }
 
-func isNodeTemporarilyOffline(httpClient *http.Client, buildBox string) bool {
-	data := fetchNodeInfo(httpClient, buildBox)
+func isNodeTemporarilyOffline(buildBox string) bool {
+	data := fetchNodeInfo(buildBox)
 
 	return data.TemporarilyOffline
 }
 
-func isNodeIdle(httpClient *http.Client, buildBox string) bool {
-	data := fetchNodeInfo(httpClient, buildBox)
+func isNodeIdle(buildBox string) bool {
+	data := fetchNodeInfo(buildBox)
 
 	return data.Idle
 }
 
-func fetchNodeInfo(httpClient *http.Client, buildBox string) JenkinsBuildBoxInfo {
+func fetchNodeInfo(buildBox string) JenkinsBuildBoxInfo {
 	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/api/json", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
@@ -345,7 +345,7 @@ func fetchNodeInfo(httpClient *http.Client, buildBox string) JenkinsBuildBoxInfo
 	return data
 }
 
-func adjustQueueSizeDependingWhetherSystemTestIsRunning(httpClient *http.Client, queueSize int) int {
+func adjustQueueSizeDependingWhetherSystemTestIsRunning(queueSize int) int {
 	systemTestRunning.Lock()
 	defer systemTestRunning.Unlock()
 	if systemTestRunning.running {
@@ -382,7 +382,7 @@ func adjustQueueSizeDependingWhetherSystemTestIsRunning(httpClient *http.Client,
 	return queueSize
 }
 
-func fetchQueueSize(httpClient *http.Client) int {
+func fetchQueueSize() int {
 	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/queue/api/json", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
