@@ -165,7 +165,6 @@ func startCloudBox(buildBox string) {
 		return
 	}
 	waitForStatus(buildBox, "RUNNING")
-	time.Sleep(time.Second * 20)
 }
 
 func calculateNumberOfNodesToEnable(queueSize int) int {
