@@ -30,6 +30,11 @@ type JenkinsQueue struct {
 	} `json:"items"`
 }
 
+type JenkinsJob struct {
+	Color           string `json:"color"`
+	NextBuildNumber int    `json:"nextBuildNumber"`
+}
+
 type JenkinsBuildBoxInfo struct {
 	Idle               bool `json:"idle"`
 	TemporarilyOffline bool `json:"temporarilyOffline"`
@@ -39,8 +44,15 @@ type JenkinsBuildBoxInfo struct {
 	} `json:"monitorData"`
 }
 
+type systemTest struct {
+	sync.Mutex
+	running         bool
+	nextBuildNumber int
+}
+
 var workersPerBuildBox = 2
 var buildBoxesPool = []string{"build1-api", "build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api", "build8-api", "build9-api", "build10-api"}
+var systemTestRunning = systemTest{}
 
 func main() {
 	defer func() {
@@ -72,6 +84,8 @@ func main() {
 
 	for {
 		queueSize := fetchQueueSize(httpClient)
+
+		queueSize = adjustQueueSizeDependingWhetherSystemTestIsRunning(httpClient, queueSize)
 		log.Printf("Queue size: %d\n", queueSize)
 
 		if queueSize > 0 {
@@ -318,17 +332,54 @@ func fetchNodeInfo(httpClient *http.Client, buildBox string) JenkinsBuildBoxInfo
 	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/api/json", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("Error deserialising Jenkins build box %s info API call: %s\n", buildBox, err.Error())
+		return JenkinsBuildBoxInfo{}
+	}
 	defer resp.Body.Close()
 
 	decoder := json.NewDecoder(resp.Body)
 	var data JenkinsBuildBoxInfo
 	err = decoder.Decode(&data)
-	if err != nil {
-		log.Printf("Error deserialising Jenkins build box %s info API call: %s\n", buildBox, err.Error())
-		return JenkinsBuildBoxInfo{}
-	}
 
 	return data
+}
+
+func adjustQueueSizeDependingWhetherSystemTestIsRunning(httpClient *http.Client, queueSize int) int {
+	systemTestRunning.Lock()
+	defer systemTestRunning.Unlock()
+	if systemTestRunning.running {
+		log.Println("System tests is still running, keep the whole pool enabled")
+		return 1
+	}
+	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/job/System-Tests/api/json", nil)
+	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return queueSize
+	}
+	defer resp.Body.Close()
+
+	decoder := json.NewDecoder(resp.Body)
+	var data JenkinsJob
+	err = decoder.Decode(&data)
+
+	if strings.HasSuffix(data.Color, "_anime") && !systemTestRunning.running && systemTestRunning.nextBuildNumber != data.NextBuildNumber {
+		systemTestRunning.running = true
+		systemTestRunning.nextBuildNumber = data.NextBuildNumber
+
+		go func() {
+			time.Sleep(8 * time.Minute)
+			systemTestRunning.Lock()
+			defer systemTestRunning.Unlock()
+			systemTestRunning.running = false
+		}()
+
+		log.Println("Detected system tests job, enable the whole pool")
+		return workersPerBuildBox * len(buildBoxesPool)
+	}
+
+	return queueSize
 }
 
 func fetchQueueSize(httpClient *http.Client) int {
