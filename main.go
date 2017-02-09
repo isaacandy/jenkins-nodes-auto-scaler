@@ -38,7 +38,7 @@ type JenkinsBuildBoxInfo struct {
 }
 
 var workersPerBuildBox = 2
-var buildBoxesPool = []string{"build1-api", "build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api"}
+var buildBoxesPool = []string{"build1-api", "build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api", "build8-api", "build9-api", "build10-api"}
 
 func main() {
 	defer func() {
@@ -73,9 +73,9 @@ func main() {
 		log.Printf("Queue size: %d\n", queueSize)
 
 		if queueSize > 0 {
-			startBuildBoxes(httpClient, service, queueSize)
+			enableMoreNodes(httpClient, service, queueSize)
 		} else {
-			stopBuildBoxes(httpClient, service)
+			disableUnnecessaryBuildBoxes(httpClient, service)
 		}
 
 		log.Println("Iteration finished")
@@ -91,15 +91,18 @@ func main() {
 	//fmt.Println(res)
 }
 
-func startBuildBoxes(httpClient *http.Client, service *compute.Service, queueSize int) {
-	boxesNeeded := calculateNumberOfBoxesToStart(queueSize)
+func enableMoreNodes(httpClient *http.Client, service *compute.Service, queueSize int) {
+	boxesNeeded := calculateNumberOfNodesToEnable(queueSize)
 	log.Println("Checking if any box is offline")
 	var wg sync.WaitGroup
 	buildBoxesPool = shuffle(buildBoxesPool)
 	for _, buildBox := range buildBoxesPool {
 		if isNodeOffline(httpClient, buildBox) {
 			wg.Add(1)
-			go startBuildBoxAsync(httpClient, service, buildBox, &wg)
+			go func(b string) {
+				defer wg.Done()
+				enableNode(httpClient, service, b)
+			}(buildBox)
 			boxesNeeded = boxesNeeded - 1
 			log.Printf("%d more boxes needed\n", boxesNeeded)
 		}
@@ -120,13 +123,12 @@ func shuffle(slice []string) []string {
 	return slice
 }
 
-func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func enableNode(httpClient *http.Client, service *compute.Service, buildBox string) {
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
 	if !isNodeTemporarilyOffline(httpClient, buildBox) {
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
-	startBuildBox(service, buildBox)
+	startCloudBox(service, buildBox)
 	if !isAgentConnected(httpClient, buildBox) {
 		launchNodeAgent(httpClient, buildBox)
 	}
@@ -135,8 +137,8 @@ func startBuildBoxAsync(httpClient *http.Client, service *compute.Service, build
 	}
 }
 
-func startBuildBox(service *compute.Service, buildBox string) {
-	if isBuildBoxRunning(service, buildBox) {
+func startCloudBox(service *compute.Service, buildBox string) {
+	if isCloudBoxRunning(service, buildBox) {
 		return
 	}
 
@@ -149,7 +151,7 @@ func startBuildBox(service *compute.Service, buildBox string) {
 	time.Sleep(time.Second * 20)
 }
 
-func calculateNumberOfBoxesToStart(queueSize int) int {
+func calculateNumberOfNodesToEnable(queueSize int) int {
 	mod := 0
 	if queueSize%workersPerBuildBox != 0 {
 		mod = 1
@@ -158,18 +160,49 @@ func calculateNumberOfBoxesToStart(queueSize int) int {
 	return (queueSize / workersPerBuildBox) + mod
 }
 
-func stopBuildBoxes(httpClient *http.Client, service *compute.Service) {
-	log.Println("Checking if any box is enabled and idle")
+func disableUnnecessaryBuildBoxes(httpClient *http.Client, service *compute.Service) {
+	online := make(chan string, len(buildBoxesPool))
+	for _, buildBox := range buildBoxesPool {
+		go func(b string, channel chan<- string) {
+			if isCloudBoxRunning(service, b) && !isNodeOffline(httpClient, b) && !isNodeTemporarilyOffline(httpClient, b) {
+				channel <- b
+				return
+			}
+			channel <- ""
+		}(buildBox, online)
+	}
+
+	var buildBoxToKeepOnline string
+	for range buildBoxesPool {
+		b := <-online
+		if b != "" {
+			buildBoxToKeepOnline = b
+			log.Printf("Will keep %s online", b)
+			break
+		}
+	}
+
+	if buildBoxToKeepOnline == "" {
+		buildBoxToKeepOnline = shuffle(buildBoxesPool)[0]
+		log.Printf("Will start %s and keep online", buildBoxToKeepOnline)
+		enableNode(httpClient, service, buildBoxToKeepOnline)
+	}
+
+	log.Println("Checking if any other box is enabled and idle")
 	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
-		wg.Add(1)
-		go stopBuildBoxAsync(httpClient, service, buildBox, &wg)
+		if buildBoxToKeepOnline != buildBox {
+			wg.Add(1)
+			go func(b string) {
+				defer wg.Done()
+				disableNode(httpClient, service, b)
+			}(buildBox)
+		}
 	}
 	wg.Wait()
 }
 
-func stopBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildBox string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func disableNode(httpClient *http.Client, service *compute.Service, buildBox string) {
 	if !isNodeIdle(httpClient, buildBox) {
 		return
 	}
@@ -179,7 +212,7 @@ func stopBuildBoxAsync(httpClient *http.Client, service *compute.Service, buildB
 		toggleNodeStatus(httpClient, buildBox, "offline")
 	}
 
-	ensureBuildBoxIsNotRunning(service, buildBox)
+	ensureCloudBoxIsNotRunning(service, buildBox)
 }
 
 func toggleNodeStatus(httpClient *http.Client, buildBox string, message string) error {
@@ -300,14 +333,14 @@ func fetchQueueSize(httpClient *http.Client) int {
 	return counter
 }
 
-func ensureBuildBoxIsNotRunning(svc *compute.Service, buildBox string) {
-	if isBuildBoxRunning(svc, buildBox) {
+func ensureCloudBoxIsNotRunning(svc *compute.Service, buildBox string) {
+	if isCloudBoxRunning(svc, buildBox) {
 		log.Printf("%s is running... Stopping\n", buildBox)
 		stopBuildBox(svc, buildBox)
 	}
 }
 
-func isBuildBoxRunning(svc *compute.Service, buildBox string) bool {
+func isCloudBoxRunning(svc *compute.Service, buildBox string) bool {
 	i, err := svc.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
 	if nil != err {
 		log.Printf("Failed to get instance data: %v\n", err)
