@@ -54,6 +54,7 @@ var workersPerBuildBox = 2
 var buildBoxesPool = []string{"build1-api", "build2-api", "build3-api", "build4-api", "build5-api", "build6-api", "build7-api", "build8-api", "build9-api", "build10-api"}
 var systemTestRunning = systemTest{}
 var httpClient = &http.Client{}
+var service *compute.Service
 
 func main() {
 	defer func() {
@@ -70,7 +71,6 @@ func main() {
 		buildBoxesPool = flag.Args()
 	}
 
-	var service *compute.Service
 	var err error
 	if *localCreds {
 		service, err = getServiceWithCredsFile()
@@ -89,9 +89,9 @@ func main() {
 		log.Printf("Queue size: %d\n", queueSize)
 
 		if queueSize > 0 {
-			enableMoreNodes(service, queueSize)
+			enableMoreNodes(queueSize)
 		} else {
-			disableUnnecessaryBuildBoxes(service)
+			disableUnnecessaryBuildBoxes()
 		}
 
 		log.Println("Iteration finished")
@@ -107,7 +107,7 @@ func main() {
 	//fmt.Println(res)
 }
 
-func enableMoreNodes(service *compute.Service, queueSize int) {
+func enableMoreNodes(queueSize int) {
 	boxesNeeded := calculateNumberOfNodesToEnable(queueSize)
 	log.Println("Checking if any box is offline")
 	var wg sync.WaitGroup
@@ -117,7 +117,7 @@ func enableMoreNodes(service *compute.Service, queueSize int) {
 			wg.Add(1)
 			go func(b string) {
 				defer wg.Done()
-				enableNode(service, b)
+				enableNode(b)
 			}(buildBox)
 			boxesNeeded = boxesNeeded - 1
 			log.Printf("%d more boxes needed\n", boxesNeeded)
@@ -139,12 +139,12 @@ func shuffle(slice []string) []string {
 	return slice
 }
 
-func enableNode(service *compute.Service, buildBox string) {
+func enableNode(buildBox string) {
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
 	if !isNodeTemporarilyOffline(buildBox) {
 		toggleNodeStatus(buildBox, "offline")
 	}
-	startCloudBox(service, buildBox)
+	startCloudBox(buildBox)
 	var agentLaunched bool
 	if !isAgentConnected(buildBox) {
 		agentLaunched = launchNodeAgent(buildBox)
@@ -154,8 +154,8 @@ func enableNode(service *compute.Service, buildBox string) {
 	}
 }
 
-func startCloudBox(service *compute.Service, buildBox string) {
-	if isCloudBoxRunning(service, buildBox) {
+func startCloudBox(buildBox string) {
+	if isCloudBoxRunning(buildBox) {
 		return
 	}
 
@@ -164,7 +164,7 @@ func startCloudBox(service *compute.Service, buildBox string) {
 		log.Println(err)
 		return
 	}
-	waitForStatus(service, buildBox, "RUNNING")
+	waitForStatus(buildBox, "RUNNING")
 	time.Sleep(time.Second * 20)
 }
 
@@ -177,11 +177,11 @@ func calculateNumberOfNodesToEnable(queueSize int) int {
 	return (queueSize / workersPerBuildBox) + mod
 }
 
-func disableUnnecessaryBuildBoxes(service *compute.Service) {
+func disableUnnecessaryBuildBoxes() {
 	online := make(chan string, len(buildBoxesPool))
 	for _, buildBox := range buildBoxesPool {
 		go func(b string, channel chan<- string) {
-			if isCloudBoxRunning(service, b) && !isNodeOffline(b) && !isNodeTemporarilyOffline(b) {
+			if isCloudBoxRunning(b) && !isNodeOffline(b) && !isNodeTemporarilyOffline(b) {
 				channel <- b
 				return
 			}
@@ -202,7 +202,7 @@ func disableUnnecessaryBuildBoxes(service *compute.Service) {
 	if buildBoxToKeepOnline == "" {
 		buildBoxToKeepOnline = shuffle(buildBoxesPool)[0]
 		log.Printf("Will start %s and keep online", buildBoxToKeepOnline)
-		enableNode(service, buildBoxToKeepOnline)
+		enableNode(buildBoxToKeepOnline)
 	}
 
 	log.Println("Checking if any other box is enabled and idle")
@@ -212,14 +212,14 @@ func disableUnnecessaryBuildBoxes(service *compute.Service) {
 			wg.Add(1)
 			go func(b string) {
 				defer wg.Done()
-				disableNode(service, b)
+				disableNode(b)
 			}(buildBox)
 		}
 	}
 	wg.Wait()
 }
 
-func disableNode(service *compute.Service, buildBox string) {
+func disableNode(buildBox string) {
 	if !isNodeIdle(buildBox) {
 		return
 	}
@@ -229,7 +229,7 @@ func disableNode(service *compute.Service, buildBox string) {
 		toggleNodeStatus(buildBox, "offline")
 	}
 
-	ensureCloudBoxIsNotRunning(service, buildBox)
+	ensureCloudBoxIsNotRunning(buildBox)
 }
 
 func toggleNodeStatus(buildBox string, message string) error {
@@ -279,13 +279,13 @@ func launchNodeAgent(buildBox string) bool {
 	return agentLaunched
 }
 
-func stopBuildBox(service *compute.Service, buildBox string) error {
+func stopBuildBox(buildBox string) error {
 	_, err := service.Instances.Stop("service-engineering", "europe-west1-b", buildBox).Do()
 	if err != nil {
 		log.Println(err)
 		return err
 	}
-	waitForStatus(service, buildBox, "TERMINATED")
+	waitForStatus(buildBox, "TERMINATED")
 
 	return nil
 }
@@ -405,15 +405,15 @@ func fetchQueueSize() int {
 	return counter
 }
 
-func ensureCloudBoxIsNotRunning(svc *compute.Service, buildBox string) {
-	if isCloudBoxRunning(svc, buildBox) {
+func ensureCloudBoxIsNotRunning(buildBox string) {
+	if isCloudBoxRunning(buildBox) {
 		log.Printf("%s is running... Stopping\n", buildBox)
-		stopBuildBox(svc, buildBox)
+		stopBuildBox(buildBox)
 	}
 }
 
-func isCloudBoxRunning(svc *compute.Service, buildBox string) bool {
-	i, err := svc.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
+func isCloudBoxRunning(buildBox string) bool {
+	i, err := service.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
 	if nil != err {
 		log.Printf("Failed to get instance data: %v\n", err)
 		return false
@@ -422,10 +422,10 @@ func isCloudBoxRunning(svc *compute.Service, buildBox string) bool {
 	return i.Status == "RUNNING"
 }
 
-func waitForStatus(svc *compute.Service, buildBox string, status string) error {
+func waitForStatus(buildBox string, status string) error {
 	previousStatus := ""
 	for {
-		i, err := svc.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
+		i, err := service.Instances.Get("service-engineering", "europe-west1-b", buildBox).Do()
 		if nil != err {
 			log.Printf("Failed to get instance data for %s: %v\n", buildBox, err)
 			continue
