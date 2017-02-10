@@ -177,6 +177,28 @@ func calculateNumberOfNodesToEnable(queueSize int) int {
 }
 
 func disableUnnecessaryBuildBoxes() {
+	var buildBoxToKeepOnline string
+	var other string
+	if isWorkingHour() {
+		buildBoxToKeepOnline = keepOneBoxOnline()
+		other = "other "
+	}
+
+	log.Printf("Checking if any %sbox is enabled and idle", other)
+	var wg sync.WaitGroup
+	for _, buildBox := range buildBoxesPool {
+		if buildBoxToKeepOnline != buildBox {
+			wg.Add(1)
+			go func(b string) {
+				defer wg.Done()
+				disableNode(b)
+			}(buildBox)
+		}
+	}
+	wg.Wait()
+}
+
+func keepOneBoxOnline() string {
 	online := make(chan string, len(buildBoxesPool))
 	for _, buildBox := range buildBoxesPool {
 		go func(b string, channel chan<- string) {
@@ -204,18 +226,20 @@ func disableUnnecessaryBuildBoxes() {
 		enableNode(buildBoxToKeepOnline)
 	}
 
-	log.Println("Checking if any other box is enabled and idle")
-	var wg sync.WaitGroup
-	for _, buildBox := range buildBoxesPool {
-		if buildBoxToKeepOnline != buildBox {
-			wg.Add(1)
-			go func(b string) {
-				defer wg.Done()
-				disableNode(b)
-			}(buildBox)
-		}
+	return buildBoxToKeepOnline
+}
+
+func isWorkingHour() bool {
+	t := time.Now()
+	if t.Hour() < 7 || t.Hour() > 19 {
+		log.Println("Nobody should be working at this time of the day...")
+		return false
 	}
-	wg.Wait()
+	if t.Weekday() == 0 || t.Weekday() == 6 {
+		log.Println("Nobody should be working on weekends...")
+		return false
+	}
+	return true
 }
 
 func disableNode(buildBox string) {
