@@ -243,7 +243,7 @@ func toggleNodeStatus(buildBox string, message string) error {
 }
 
 func launchNodeAgent(buildBox string) bool {
-	log.Printf("Agent was relaunched for %s, waiting for it to come online\n", buildBox)
+	log.Printf("Agent was launched for %s, waiting for it to come online\n", buildBox)
 
 	quit := make(chan bool)
 	onlineChannel := make(chan bool, 1)
@@ -270,9 +270,10 @@ func launchNodeAgent(buildBox string) bool {
 	select {
 	case <-onlineChannel:
 	case <-time.After(time.Second * 120):
-		log.Printf("%s did not come online after launching the agent", buildBox)
+		log.Printf("Unable to launch the agent for %s successfully, shutting down", buildBox)
 		quit <- true
 		agentLaunched = false
+		stopBuildBox(buildBox)
 	}
 
 	return agentLaunched
