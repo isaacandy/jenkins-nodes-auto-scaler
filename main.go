@@ -66,6 +66,7 @@ func main() {
 
 	workersPerBuildBox = *flag.Int("workersPerBuildBox", workersPerBuildBox, "number of workers per build box")
 	localCreds := flag.Bool("useLocalCreds", false, "uses the local creds.json as credentials for Google Cloud APIs")
+	jobType := flag.String("jobType", "auto_scaling", "defines which job to execute (auto_scaling, all_up, all_down)")
 	flag.Parse()
 	if len(flag.Args()) > 0 {
 		buildBoxesPool = flag.Args()
@@ -82,6 +83,17 @@ func main() {
 		return
 	}
 
+	switch *jobType {
+	case "all_up":
+		enableAllBuildBoxes()
+	case "all_down":
+		disableAllBuildBoxes()
+	default:
+		autoScaling()
+	}
+}
+
+func autoScaling() {
 	for {
 		queueSize := fetchQueueSize()
 
@@ -98,13 +110,6 @@ func main() {
 		fmt.Println("")
 		time.Sleep(time.Second * 8)
 	}
-
-	//res, err := service.Instances.AggregatedList("service-engineering").Filter("(name eq jenkins4-api)").Do()
-	//if err != nil {
-	//	fmt.Printf("Error getting aggregatedlist: %s\n", err.Error())
-	//	return
-	//}
-	//fmt.Println(res)
 }
 
 func enableMoreNodes(queueSize int) {
@@ -450,6 +455,38 @@ func isCloudBoxRunning(buildBox string) bool {
 	}
 
 	return i.Status == "RUNNING"
+}
+
+func enableAllBuildBoxes() {
+	log.Println("Spinning up all build boxes specified")
+	var wg sync.WaitGroup
+	for _, buildBox := range buildBoxesPool {
+		if isNodeOffline(buildBox) {
+			wg.Add(1)
+			go func(b string) {
+				defer wg.Done()
+				enableNode(b)
+			}(buildBox)
+		}
+	}
+	wg.Wait()
+}
+
+func disableAllBuildBoxes() {
+	log.Println("Terminating all build boxes specified")
+	var wg sync.WaitGroup
+	for _, buildBox := range buildBoxesPool {
+		wg.Add(1)
+		go func(b string) {
+			defer wg.Done()
+			if !isNodeTemporarilyOffline(b) {
+				toggleNodeStatus(b, "offline")
+			}
+
+			ensureCloudBoxIsNotRunning(b)
+		}(buildBox)
+	}
+	wg.Wait()
 }
 
 func waitForStatus(buildBox string, status string) error {
