@@ -230,7 +230,13 @@ func keepOneBoxOnline() string {
 }
 
 func isWorkingHour() bool {
-	t := time.Now()
+	location, err := time.LoadLocation("Europe/London")
+	if err != nil {
+		return true
+	}
+
+	t := time.Now().In(location)
+	fmt.Println(t.Hour())
 	if t.Hour() < 7 || t.Hour() > 19 {
 		log.Println("Nobody should be working at this time of the day...")
 		return false
