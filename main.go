@@ -185,13 +185,13 @@ func calculateNumberOfNodesToEnable(queueSize int) int {
 
 func disableUnnecessaryBuildBoxes() {
 	var buildBoxToKeepOnline string
-	var other string
+	other := "box"
 	if isWorkingHour() {
 		buildBoxToKeepOnline = keepOneBoxOnline()
-		other = "other "
+		other = "other box apart from " + buildBoxToKeepOnline
 	}
 
-	log.Printf("Checking if any %sbox is enabled and idle", other)
+	log.Printf("Checking if any %s is enabled and idle", other)
 	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
 		if buildBoxToKeepOnline != buildBox {
