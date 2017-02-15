@@ -144,19 +144,21 @@ func shuffle(slice []string) []string {
 	return slice
 }
 
-func enableNode(buildBox string) {
+func enableNode(buildBox string) bool {
 	log.Printf("%s is offline, trying to toggle it online\n", buildBox)
 	if !isNodeTemporarilyOffline(buildBox) {
 		toggleNodeStatus(buildBox, "offline")
 	}
 	startCloudBox(buildBox)
-	var agentLaunched bool
+	agentLaunched := true
 	if !isAgentConnected(buildBox) {
 		agentLaunched = launchNodeAgent(buildBox)
 	}
 	if agentLaunched && isNodeTemporarilyOffline(buildBox) {
 		toggleNodeStatus(buildBox, "online")
 	}
+
+	return agentLaunched
 }
 
 func startCloudBox(buildBox string) {
@@ -204,24 +206,42 @@ func disableUnnecessaryBuildBoxes() {
 }
 
 func keepOneBoxOnline() string {
-	online := make(chan string, len(buildBoxesPool))
+	build1BoxPresent := false
 	for _, buildBox := range buildBoxesPool {
-		go func(b string, channel chan<- string) {
-			if isCloudBoxRunning(b) && !isNodeOffline(b) && !isNodeTemporarilyOffline(b) {
-				channel <- b
-				return
-			}
-			channel <- ""
-		}(buildBox, online)
+		if buildBox == "build1-api" {
+			build1BoxPresent = true
+			break
+		}
 	}
 
 	var buildBoxToKeepOnline string
-	for range buildBoxesPool {
-		b := <-online
-		if b != "" {
-			buildBoxToKeepOnline = b
-			log.Printf("Will keep %s online", b)
-			break
+	if build1BoxPresent && isCloudBoxRunning("build1-api") && !isNodeOffline("build1-api") && !isNodeTemporarilyOffline("build1-api") {
+		buildBoxToKeepOnline = "build1-api"
+	} else if build1BoxPresent {
+		if enableNode("build1-api") {
+			buildBoxToKeepOnline = "build1-api"
+		}
+	}
+
+	if buildBoxToKeepOnline == "" {
+		online := make(chan string, len(buildBoxesPool))
+		for _, buildBox := range buildBoxesPool {
+			go func(b string, channel chan<- string) {
+				if isCloudBoxRunning(b) && !isNodeOffline(b) && !isNodeTemporarilyOffline(b) {
+					channel <- b
+					return
+				}
+				channel <- ""
+			}(buildBox, online)
+		}
+
+		for range buildBoxesPool {
+			b := <-online
+			if b != "" {
+				buildBoxToKeepOnline = b
+				log.Printf("Will keep %s online", b)
+				break
+			}
 		}
 	}
 
