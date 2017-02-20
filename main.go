@@ -23,7 +23,8 @@ import (
 
 type JenkinsQueue struct {
 	Items []struct {
-		Buildable bool `json:"buildable"`
+		Buildable bool   `json:"buildable"`
+		Why       string `json:"why"`
 		Task      struct {
 			Name string `json:"name"`
 		} `json:"task"`
@@ -452,7 +453,7 @@ func fetchQueueSize() int {
 	}
 	counter := 0
 	for _, i := range data.Items {
-		if i.Buildable {
+		if i.Buildable && !strings.HasPrefix(i.Why, "There are no nodes with the label") {
 			counter = counter + 1
 		}
 	}
