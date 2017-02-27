@@ -442,6 +442,10 @@ func fetchQueueSize() int {
 	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/queue/api/json", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("Error deserialising Jenkins queue API call: %s\n", err.Error())
+		return 0
+	}
 	defer resp.Body.Close()
 
 	decoder := json.NewDecoder(resp.Body)
