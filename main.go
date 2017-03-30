@@ -290,9 +290,9 @@ func disableNode(buildBox string) {
 func toggleNodeStatus(buildBox string, message string) error {
 	req, err := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/toggleOffline", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
-	_, err = httpClient.Do(req)
-
+	resp, err := httpClient.Do(req)
 	if err == nil {
+		defer resp.Body.Close()
 		log.Printf("%s was toggled temporarily %s\n", buildBox, message)
 	}
 	return err
@@ -315,7 +315,10 @@ func launchNodeAgent(buildBox string) bool {
 				} else {
 					req, _ := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/launchSlaveAgent", nil)
 					req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
-					httpClient.Do(req)
+					resp, err := httpClient.Do(req)
+					if err == nil {
+						resp.Body.Close()
+					}
 				}
 				time.Sleep(time.Second * 10)
 			}
