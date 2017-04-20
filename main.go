@@ -204,14 +204,6 @@ func disableUnnecessaryBuildBoxes() {
 	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
 		if buildBoxToKeepOnline != buildBox {
-			lastStarted.RLock()
-			started := lastStarted.m[buildBox]
-			lastStarted.RUnlock()
-			if !started.IsZero() && started.Add(time.Minute*10).After(time.Now()) {
-				log.Printf("%s has not been up for 10 minutes yet", buildBox)
-				continue
-			}
-
 			wg.Add(1)
 			go func(b string) {
 				defer wg.Done()
@@ -292,6 +284,14 @@ func isWorkingHour() bool {
 
 func disableNode(buildBox string) {
 	if !isNodeIdle(buildBox) {
+		return
+	}
+
+	lastStarted.RLock()
+	started := lastStarted.m[buildBox]
+	lastStarted.RUnlock()
+	if !started.IsZero() && started.Add(time.Minute*10).After(time.Now()) {
+		log.Printf("%s has not been up for 10 minutes yet", buildBox)
 		return
 	}
 
