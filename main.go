@@ -57,6 +57,11 @@ var systemTestRunning = systemTest{}
 var httpClient = &http.Client{}
 var service *compute.Service
 
+var lastStarted = struct {
+	sync.RWMutex
+	m map[string]time.Time
+}{m: make(map[string]time.Time)}
+
 func main() {
 	defer func() {
 		if e := recover(); e != nil {
@@ -173,6 +178,9 @@ func startCloudBox(buildBox string) {
 		return
 	}
 	waitForStatus(buildBox, "RUNNING")
+	lastStarted.Lock()
+	lastStarted.m[buildBox] = time.Now()
+	lastStarted.Unlock()
 }
 
 func calculateNumberOfNodesToEnable(queueSize int) int {
@@ -196,6 +204,14 @@ func disableUnnecessaryBuildBoxes() {
 	var wg sync.WaitGroup
 	for _, buildBox := range buildBoxesPool {
 		if buildBoxToKeepOnline != buildBox {
+			lastStarted.RLock()
+			started := lastStarted.m[buildBox]
+			lastStarted.RUnlock()
+			if !started.IsZero() && started.Add(time.Minute*10).After(time.Now()) {
+				log.Printf("%s has not been up for 10 minutes yet", buildBox)
+				continue
+			}
+
 			wg.Add(1)
 			go func(b string) {
 				defer wg.Done()
@@ -332,13 +348,13 @@ func launchNodeAgent(buildBox string) bool {
 		log.Printf("Unable to launch the agent for %s successfully, shutting down", buildBox)
 		quit <- true
 		agentLaunched = false
-		stopBuildBox(buildBox)
+		stopCloudBox(buildBox)
 	}
 
 	return agentLaunched
 }
 
-func stopBuildBox(buildBox string) error {
+func stopCloudBox(buildBox string) error {
 	_, err := service.Instances.Stop("service-engineering", "europe-west1-b", buildBox).Do()
 	if err != nil {
 		log.Println(err)
@@ -346,6 +362,9 @@ func stopBuildBox(buildBox string) error {
 	}
 	waitForStatus(buildBox, "TERMINATED")
 
+	lastStarted.Lock()
+	lastStarted.m[buildBox] = time.Time{}
+	lastStarted.Unlock()
 	return nil
 }
 
@@ -471,7 +490,7 @@ func fetchQueueSize() int {
 func ensureCloudBoxIsNotRunning(buildBox string) {
 	if isCloudBoxRunning(buildBox) {
 		log.Printf("%s is running... Stopping\n", buildBox)
-		stopBuildBox(buildBox)
+		stopCloudBox(buildBox)
 	}
 }
 
