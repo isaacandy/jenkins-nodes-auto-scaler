@@ -304,7 +304,7 @@ func disableNode(buildBox string) {
 }
 
 func toggleNodeStatus(buildBox string, message string) error {
-	req, err := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/toggleOffline", nil)
+	req, err := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+"/toggleOffline", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
 	if err == nil {
@@ -329,7 +329,7 @@ func launchNodeAgent(buildBox string) bool {
 					onlineChannel <- true
 					return
 				} else {
-					req, _ := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/launchSlaveAgent", nil)
+					req, _ := http.NewRequest("POST", "http://api-jenkins.shzcld.com/computer/"+buildBox+"/launchSlaveAgent", nil)
 					req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 					resp, err := httpClient.Do(req)
 					if err == nil {
@@ -369,7 +369,7 @@ func stopCloudBox(buildBox string) error {
 }
 
 func isAgentConnected(buildBox string) bool {
-	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/logText/progressiveHtml", nil)
+	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+"/logText/progressiveHtml", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
 
@@ -407,7 +407,7 @@ func isNodeIdle(buildBox string) bool {
 }
 
 func fetchNodeInfo(buildBox string) JenkinsBuildBoxInfo {
-	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+".c.service-engineering.internal/api/json", nil)
+	req, err := http.NewRequest("GET", "http://api-jenkins.shzcld.com/computer/"+buildBox+"/api/json", nil)
 	req.Header.Add("Authorization", "Basic bHVjYS5uYWxkaW5pOmY0MGRkZjI1NGYxOTk0ZWZiMTNjMDc4YjdlMmFmMjJj=")
 	resp, err := httpClient.Do(req)
 	if err != nil {

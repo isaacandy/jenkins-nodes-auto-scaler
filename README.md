@@ -3,9 +3,11 @@ Tool that enable and disable build boxes when they're needed.
 The tool options are:
 ```
   -useLocalCreds
-    	uses the local creds.json as credentials for Google Cloud APIs
-  -workersPerBuildBox int
-    	number of workers per build box (default 2)
+        uses the local creds.json as credentials for Google Cloud APIs
+  -workersPerBuildBox
+        number of workers per build box (default 2)
+  -jobType
+        defines which job to execute (auto_scaling, all_up, all_down)
 ```
 
 The tool checks the Jenkins queue and when not empty it spins up additional boxes, based on the size of the queue and
