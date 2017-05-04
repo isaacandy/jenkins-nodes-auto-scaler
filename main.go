@@ -357,30 +357,34 @@ func launchNodeAgent(buildBox string) bool {
 	log.Printf("Agent was launched for %s, waiting for it to come online\n", buildBox)
 
 	quit := make(chan bool)
-	onlineChannel := make(chan bool, 1)
+	online := make(chan bool, 1)
 	go func() {
+		counter := 0
 		for {
 			select {
 			case <-quit:
 				return
 			default:
 				if isAgentConnected(buildBox) {
-					onlineChannel <- true
+					online <- true
 					return
-				} else {
+				}
+
+				if counter%10 == 0 {
 					resp, err := jenkinsRequest("POST", "/computer/"+buildBox+"/launchSlaveAgent")
 					if err == nil {
 						resp.Body.Close()
 					}
 				}
-				time.Sleep(time.Second * 10)
 			}
+			time.Sleep(time.Second)
+			counter += 1
 		}
 	}()
 
 	agentLaunched := true
 	select {
-	case <-onlineChannel:
+	case <-online:
 	case <-time.After(time.Second * 120):
 		log.Printf("Unable to launch the agent for %s successfully, shutting down", buildBox)
 		quit <- true
