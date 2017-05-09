@@ -336,7 +336,7 @@ func disableNode(buildBox string) {
 	started := lastStarted.m[buildBox]
 	lastStarted.RUnlock()
 	if !started.IsZero() && started.Add(time.Minute*10).After(time.Now()) {
-		log.Printf("%s has not been up for 10 minutes yet", buildBox)
+		log.Printf("%s is idle but has been up for less than 10 minutes", buildBox)
 		return
 	}
 
