@@ -58,7 +58,8 @@ var preferredNodeToKeepOnline *string
 var buildBoxesPool = []string{}
 var httpClient = &http.Client{}
 var service *compute.Service
-var jobRequiringAllNodesRunning = false
+
+var lastSeenBuildNumber int
 
 var lastStarted = struct {
 	sync.RWMutex
@@ -185,8 +186,11 @@ func enableMoreNodes(queueSize int) {
 
 func shuffle(slice []string) []string {
 	for i := range slice {
-		j := rand.Intn(i + 1)
-		slice[i], slice[j] = slice[j], slice[i]
+		randomInt := rand.Intn(i + 1)
+		first := slice[i]
+		second := slice[randomInt]
+		slice[randomInt] = first
+		slice[i] = second
 	}
 	return slice
 }
@@ -475,19 +479,11 @@ func adjustQueueSizeDependingWhetherJobRequiringAllNodesIsRunning(queueSize int)
 	var data JenkinsJob
 	err = decoder.Decode(&data)
 
-	if !jobRequiringAllNodesRunning && strings.HasSuffix(data.Color, "_anime") {
-		jobRequiringAllNodesRunning = true
+	if data.NextBuildNumber != lastSeenBuildNumber && strings.HasSuffix(data.Color, "_anime") {
+		lastSeenBuildNumber = data.NextBuildNumber
 
 		log.Printf("Detected %s job, enable the whole pool\n", *jobNameRequiringAllNodes)
 		return *workersPerBuildBox * len(buildBoxesPool)
-	}
-
-	if jobRequiringAllNodesRunning && !strings.HasSuffix(data.Color, "_anime") {
-		jobRequiringAllNodesRunning = false
-		log.Printf("%s is no longer running\n", *jobNameRequiringAllNodes)
-	} else if jobRequiringAllNodesRunning && strings.HasSuffix(data.Color, "_anime") {
-		log.Printf("%s is still running, keep the whole pool enabled\n", *jobNameRequiringAllNodes)
-		return -1
 	}
 
 	return queueSize
